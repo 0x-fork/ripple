@@ -3910,6 +3910,10 @@ const visitors = {
 			let style_attribute = null;
 			/** @type {TransformClientState['update']} */
 			const local_updates = [];
+			/** @type {TransformClientState['update']} */
+			const property_updates = [];
+			/** @type {string[]} */
+			const property_names = [];
 			const element_name = /** @type {AST.Identifier} */ (element_id).name;
 			const is_void = is_void_element(element_name);
 			// The scope hashes and applied theme classes the style pre-pass
@@ -4182,15 +4186,19 @@ const visitors = {
 							const id = state.flush_node?.();
 
 							if (is_dom_property(attribute)) {
-								local_updates.push({
-									operation: () =>
+								property_names.push(attribute.toLowerCase());
+								property_updates.push({
+									operation: (key) =>
 										b.stmt(
 											b.assignment(
 												'=',
 												b.member(/** @type {AST.Identifier} */ (id), attribute),
-												expression,
+												/** @type {AST.Expression} */ (key),
 											),
 										),
+									expression,
+									identity: attr_value,
+									initial: b.member(b.id('_$_'), b.id('UNINITIALIZED')),
 								});
 							} else {
 								const kind = attribute_kind(element_name, attribute, state);
@@ -4398,6 +4406,16 @@ const visitors = {
 					spread_attributes.length === 1 && spread_attributes[0].type === 'SpreadElement'
 						? spread_attributes[0].argument
 						: null;
+				// A spread must not write or remove properties owned by direct
+				// bindings: those bindings skip assignments when unchanged.
+				const excluded =
+					property_names.length > 0 ? b.id(state.scope.generate('spread_excluded')) : undefined;
+				if (excluded) {
+					state.hoisted.push(
+						b.var(excluded, b.array(property_names.map((name) => b.literal(name)))),
+					);
+					register_hoisted(state.hoisted, excluded.name);
+				}
 				/** @type {UpdateEntry} */
 				const spread_update = {
 					operation: (next, prev) =>
@@ -4405,7 +4423,7 @@ const visitors = {
 							b.assignment(
 								'=',
 								/** @type {AST.MemberExpression} */ (prev),
-								b.call('_$_.spread', id, /** @type {AST.Expression} */ (next), prev),
+								b.call('_$_.spread', id, /** @type {AST.Expression} */ (next), prev, excluded),
 							),
 						),
 					expression: sole ?? b.object(spread_attributes),
@@ -4416,6 +4434,9 @@ const visitors = {
 				};
 				local_updates.push(spread_update);
 			}
+			// Direct property assignments have always run after spreads. Keep
+			// that order now that they also compare their previous values.
+			local_updates.push(...property_updates);
 
 			/** @type {TransformClientState['init']} */
 			const init = [];

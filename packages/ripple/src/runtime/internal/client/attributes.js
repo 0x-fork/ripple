@@ -129,8 +129,21 @@ function apply_styles(element, new_styles, prev) {
  * @param {string} key
  * @param {any} value
  * @param {SpreadState} state
+ * @param {string[]} [excluded]
  */
-function set_attribute_helper(element, key, value, state) {
+function set_attribute_helper(element, key, value, state, excluded) {
+	if (excluded !== undefined && element.nodeName === 'INPUT') {
+		// Input defaults reflect `value`/`checked` attributes, while writes
+		// to the live properties can still be controlled by the spread.
+		var name = key.toLowerCase();
+		if (
+			(value == null || typeof value === 'string' || key !== name) &&
+			((name === 'value' && excluded.includes('defaultvalue')) ||
+				(name === 'checked' && excluded.includes('defaultchecked')))
+		) {
+			return;
+		}
+	}
 	if (key === 'class') {
 		const is_html = element.namespaceURI === 'http://www.w3.org/1999/xhtml';
 		set_class_value(/** @type {HTMLElement} */ (element), value, undefined, is_html);
@@ -204,14 +217,15 @@ var EMPTY = {};
  * @param {Element} element
  * @param {any} next
  * @param {SpreadState | undefined} state
+ * @param {string[]} [excluded] Stable lowercase names controlled by direct property bindings.
  * @returns {SpreadState}
  */
-export function spread(element, next, state) {
+export function spread(element, next, state, excluded) {
 	if (next == null || (typeof next !== 'object' && typeof next !== 'function')) {
 		next = EMPTY;
 	}
 	if (state === undefined) {
-		return apply_spread(new SpreadState(element), next);
+		return apply_spread(new SpreadState(element), next, excluded);
 	}
 	if (state.n === next && !state.t) {
 		return state;
@@ -248,12 +262,12 @@ export function spread(element, next, state) {
 	}
 	for (key in prev) {
 		if (key !== '#class' && (!(key in next) || is_ref_prop(next[key]))) {
-			set_attribute_helper(element, key, null, state);
+			set_attribute_helper(element, key, null, state, excluded);
 		}
 	}
 
 	for (key in next) {
-		if (key === 'children') continue;
+		if (key === 'children' || excluded?.includes(key.toLowerCase())) continue;
 
 		var value = next[key];
 		if (typeof value === 'function' && is_ref_prop(value)) {
@@ -271,7 +285,7 @@ export function spread(element, next, state) {
 		if (key !== '#class' && key in prev && prev[key] === value) {
 			continue;
 		}
-		set_attribute_helper(element, key, value, state);
+		set_attribute_helper(element, key, value, state, excluded);
 	}
 
 	if (state.r !== null) {
@@ -289,9 +303,10 @@ export function spread(element, next, state) {
  * applied.
  * @param {SpreadState} state
  * @param {Record<string | symbol, any>} next
+ * @param {string[]} [excluded]
  * @returns {SpreadState}
  */
-function apply_spread(state, next) {
+function apply_spread(state, next, excluded) {
 	var element = state.e;
 	/** @type {Record<string, any>} */
 	var current = {};
@@ -308,7 +323,7 @@ function apply_spread(state, next) {
 	}
 
 	for (var key in next) {
-		if (key === 'children') continue;
+		if (key === 'children' || excluded?.includes(key.toLowerCase())) continue;
 
 		var value = next[key];
 		if (typeof value === 'function' && is_ref_prop(value)) {
@@ -320,7 +335,7 @@ function apply_spread(state, next) {
 			tracked = true;
 		}
 		current[key] = value;
-		set_attribute_helper(element, key, value, state);
+		set_attribute_helper(element, key, value, state, excluded);
 	}
 
 	state.r = refs;
