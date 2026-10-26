@@ -1,6 +1,6 @@
 /** @import { Block, DeferredTrackedEntry, Tracked } from '#client' */
 
-import { pause_block, pre_effect } from './blocks.js';
+import { is_destroyed, pause_block, pre_effect } from './blocks.js';
 import {
 	ASYNC_DERIVED_READ_THROWN,
 	DIRECT_CHILD_BLOCK,
@@ -203,7 +203,7 @@ export function track_async(fn, b, hash) {
 		request_id = begin_boundary_request(boundary);
 	}
 
-	pre_effect(() => {
+	var async_block = pre_effect(() => {
 		if (had_hydration_data) {
 			// First run after hydration: skip fn() entirely (the SSR already
 			// produced the resolved value) and instead register the direct
@@ -219,6 +219,21 @@ export function track_async(fn, b, hash) {
 				}
 			}
 			return;
+		}
+
+		/** @type {AbortController | null} */
+		var current_abort_controller = null;
+		function cleanup() {
+			if (current_abort_controller !== null && current_abort_controller.signal.aborted === false) {
+				current_abort_controller.abort(TRACKED_UPDATED);
+			}
+			if (async_block && is_destroyed(async_block)) {
+				// This also owns requests from computations that suspended while
+				// reading a dependency, before they could return a promise.
+				complete_deferred_boundaries(t);
+				if (request_id > 0) complete_boundary_request(boundary, request_id);
+				request_id = 0;
+			}
 		}
 
 		var current_version = ++version;
@@ -274,7 +289,7 @@ export function track_async(fn, b, hash) {
 						update_tracked_value_clock(t, SUSPENSE_REJECTED);
 					});
 				}
-				return;
+				return cleanup;
 			}
 			throw e;
 		}
@@ -299,7 +314,7 @@ export function track_async(fn, b, hash) {
 		// Capture per-invocation so async closures (rejection handler, teardown)
 		// have a stable reference. The shared abort_controller is only read
 		// synchronously at the top of the pre_effect to abort the previous request.
-		var current_abort_controller = async_result.abort_controller;
+		current_abort_controller = async_result.abort_controller;
 		abort_controller = current_abort_controller;
 
 		async_result.promise.then(
@@ -348,12 +363,7 @@ export function track_async(fn, b, hash) {
 			},
 		);
 
-		return () => {
-			// Teardown: abort in-flight request when block is destroyed
-			if (current_abort_controller !== null && current_abort_controller.signal.aborted === false) {
-				current_abort_controller.abort(TRACKED_UPDATED);
-			}
-		};
+		return cleanup;
 	});
 
 	return t;
