@@ -53,6 +53,8 @@ function stream_runtime(
 ) {
 	var doc = document;
 	var registry = window.__RIPPLE_B__ || (window.__RIPPLE_B__ = {});
+	/** @type {Document | undefined} */
+	var inert;
 
 	/**
 	 * @param {number} id
@@ -69,7 +71,13 @@ function stream_runtime(
 			doc.querySelector('template[' + chunk_attr + '="' + id + '"]')
 		);
 
+		/** @type {Element[] | undefined} */
+		var untouched;
 		function done() {
+			// Inner editors first: outer snapshots include their updated attributes.
+			if (untouched) {
+				for (var editor of untouched) editor.setAttribute('data-ripple-content', editor.innerHTML);
+			}
 			registry[id] = 1;
 			if (template) {
 				template.remove();
@@ -126,6 +134,42 @@ function stream_runtime(
 			current = current.nextSibling;
 		}
 		if (!close) {
+			done();
+			return;
+		}
+
+		// Refresh only baselines verified unchanged before this server update.
+		// Once edited, the binding owns the content; a late chunk must not erase it.
+		var edited = false;
+		for (
+			var ancestor = open.parentElement?.closest('[data-ripple-content]');
+			ancestor;
+			ancestor = ancestor.parentElement?.closest('[data-ripple-content]')
+		) {
+			var source = /** @type {string} */ (ancestor.getAttribute('data-ripple-content'));
+			var current_html = ancestor.innerHTML;
+			if (source !== current_html && source !== '') {
+				inert ??= doc.implementation.createHTMLDocument();
+				var original = inert.createElementNS(ancestor.namespaceURI, ancestor.localName);
+				original.innerHTML = source;
+				source = original.innerHTML;
+			}
+			var editor = ancestor;
+			if (editor.__ripple_content_edited || source !== current_html) {
+				editor.__ripple_content_edited = edited = true;
+			} else {
+				(untouched ??= []).push(editor);
+			}
+		}
+		if (edited) {
+			// The skipped slot also invalidates hydration inside untouched inner
+			// editors. Preserve their live subtrees instead of re-baselining them.
+			if (untouched) {
+				for (var editor of untouched) editor.__ripple_content_edited = true;
+				untouched = undefined;
+			}
+			open.remove();
+			close.remove();
 			done();
 			return;
 		}
